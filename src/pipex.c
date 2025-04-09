@@ -1,114 +1,104 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   pipex.c                                            :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: fernando <marvin@42.fr>                    +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2025/02/19 17:22:16 by fernando          #+#    #+#             */
+/*   Updated: 2025/02/19 17:37:19 by fernando         ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
 #include "../pipex.h"
 
-int		execute_commands(char *infile, char const *argv[], char *outfile, int cmds);
-void	manage_pipes(int last_pipe, int cmds, int count, int *pipefd);
-void	manage_redirection(int count, char *infile, char *outfile);
+void	execute_commands(const char *in, const char *argv[],
+			const char *out, const char *envp[]);
+void	execute_first_child(int pipefd[2], int fd_in,
+			const char *cmd, const char *envp[]);
+void	execute_second_child(int pipefd[2], int fd_out,
+			const char *cmd, const char *envp[]);
+void	close_fds_and_wait(int fd_in, int fd_out,
+			int pipefd[2], pid_t last_pid);
 
-int	main(int argc, char const *argv[])
+int	main(int argc, char const *argv[], char const *envp[])
 {
-	char *infile;
-	char *outfile;
-
-	infile = (char *) argv[1];
-	outfile = (char *) argv[argc - 1];
-	if ((argc < 5))
-	{
-		perror("Invalid argument number. Usage: ./pipex infile command1 command2 outfile\n");
-		exit(1);
-	}
-	execute_commands(infile, argv + 1 ,outfile, argc - 3);
-	return 0;
+	if (argc != 5)
+		ft_error_exit("Usage: ./pipex infile cmd1 cmd2 outfile\n", 0);
+	execute_commands(argv[1], argv + 1, argv[argc - 1], envp);
+	return (0);
 }
 
-int execute_commands(char *infile, char const *argv[], char *outfile, int cmds)
+void	execute_commands(const char *in, const char *argv[],
+			const char *out, const char *envp[])
 {
-	int count;
-	int pid;
-	int *pipefd;
-	int last_pipe;
+	int		pipefd[2];
+	int		fd_in;
+	int		fd_out;
+	pid_t	pid1;
+	pid_t	pid2;
 
-	count = 1;
-	pipefd = malloc(2 * sizeof(int *));
-	last_pipe = -1;
-	while (count <= cmds)
-	{
-		if (count != cmds)
-		{
-			if (pipe(pipefd) == -1) 
-				exit(EXIT_FAILURE);
-		}
-		pid = fork();
-		if (pid == 0)
-		{
-			manage_pipes(last_pipe, cmds, count, pipefd);
-			manage_redirection(count, infile, outfile);
-			execute_child((char *)argv[count]);
-		}
-		else
-		{
-			if (last_pipe != -1)
-				close(last_pipe); 
-			last_pipe = pipefd[0];
-			close(pipefd[1]); 
-		}
-		count++;
-	}
-
-	while (wait(NULL) > 0);
-	free(pipefd);
-	return 0;
+	if (pipe(pipefd) == -1)
+		ft_error_exit("pipe", 1);
+	fd_in = open(in, O_RDONLY);
+	if (fd_in == -1)
+		perror("open infile failed");
+	fd_out = open(out, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd_out == -1)
+		perror("open outfile failed");
+	pid1 = fork();
+	if (pid1 == 0)
+		execute_first_child(pipefd, fd_in, (char *)argv[1], envp);
+	pid2 = fork();
+	if (pid2 == 0)
+		execute_second_child(pipefd, fd_out, (char *)argv[2], envp);
+	close_fds_and_wait(fd_in, fd_out, pipefd, pid2);
 }
 
-void manage_pipes(int last_pipe, int cmds, int count, int *pipefd)
+void	execute_first_child(int pipefd[2], int fd_in,
+			const char *cmd, const char *envp[])
 {
-	if (last_pipe != -1)
-	{
-		if (dup2(last_pipe, STDIN_FILENO) == -1)
-		{
-			perror("dup2 pipe STDIN");
-			exit(EXIT_FAILURE);
-		}
-		close(last_pipe);
-	}
-
-	if (count != cmds)
-	{
-		close(pipefd[0]);
-		if (dup2(pipefd[1], STDOUT_FILENO) == -1)
-		{
-			perror("dup2 pipe STDOUT");
-			exit(EXIT_FAILURE);
-		}
-		close(pipefd[1]);
-	}
+	if (dup2(fd_in, STDIN_FILENO) == -1)
+		ft_error_exit("dup2 infile failed", 1);
+	if (dup2(pipefd[1], STDOUT_FILENO) == -1)
+		ft_error_exit("dup2 pipe write failed", 1);
+	close(pipefd[0]);
+	close(fd_in);
+	close(pipefd[1]);
+	execute_child(cmd, envp);
 }
 
-void	manage_redirection(int count, char *infile, char *outfile)
+void	execute_second_child(int pipefd[2], int fd_out,
+			const char *cmd, const char *envp[])
 {
-	int fd; 
+	if (dup2(pipefd[0], STDIN_FILENO) == -1)
+		ft_error_exit("dup2 read failed", 1);
+	if (fd_out == -1 || dup2(fd_out, STDOUT_FILENO) == -1)
+		ft_error_exit("dup2 outfile failed", 1);
+	close(pipefd[1]);
+	if (fd_out != -1)
+		close(fd_out);
+	close(pipefd[0]);
+	execute_child(cmd, envp);
+}
 
-	if (count == 1)
+void	close_fds_and_wait(int fd_in, int fd_out, int pipefd[2], pid_t last_pid)
+{
+	int		status;
+	int		exit_code;
+	pid_t	pid;
+
+	exit_code = 0;
+	close(fd_in);
+	close(fd_out);
+	close(pipefd[0]);
+	close(pipefd[1]);
+	pid = wait(&status);
+	while (pid > 0)
 	{
-		int fd = open(infile, O_RDONLY);
-		if (fd == -1)
-		{
-			perror("open infile failed");
-			exit(EXIT_FAILURE);
-		}
-		if (dup2(fd, STDIN_FILENO) == -1)
-		{
-			perror("dup2 infile failed");
-			exit(EXIT_FAILURE);
-		}
-		close(fd);
+		if (pid == last_pid && WIFEXITED(status))
+			exit_code = WEXITSTATUS(status);
+		pid = wait(&status);
 	}
-	else 
-	{
-		fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-		if (dup2(fd, STDOUT_FILENO) == -1)
-		{
-			perror("dup2");
-			exit(EXIT_FAILURE);
-		}
-	}
+	exit(exit_code);
 }
